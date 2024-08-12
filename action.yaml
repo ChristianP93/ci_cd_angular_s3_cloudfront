@@ -1,0 +1,87 @@
+name: Continuous Integration & Deployment STAGING
+
+on:
+  push:
+    branches:
+      - staging
+
+env:
+  # ORG secrets
+    AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  # Sentry credentials
+    SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+    SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+
+  # REPO secrets
+    ENV_FILE: ${{ secrets.ENV_FILE_STAGING }}
+    
+    # AWS 
+    DISTRIBUTION_CLOUDFRONT: ${{ secrets.DISTRIBUTION_CLOUDFRONT_STAGING }}
+    
+    # Sentry credentials
+    SENTRYCLIRC: ${{ secrets.SENTRYCLIRC }}
+    SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+
+  # ACTIONS variables
+    VERSION: v${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+
+  # LOCAL variables
+    S3_BUCKET_STAGING: s3://my-awesome-bucket-staging
+    DIST_PATH: dist/project-name-usually
+
+jobs:
+  ci-cd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 21.1.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: 'Create sentryclirc file'
+        run: echo "${{ env.SENTRYCLIRC }}" > .sentryclirc
+
+      - name: 'Create env environment.ts'
+        run: echo "${{ env.ENV_FILE }}" > ./src/environments/environment.ts
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          aws s3 cp \
+            --recursive \
+            --region eu-south-1 \
+            ${{env.DIST_PATH}} ${{ env.S3_BUCKET_STAGING }}
+
+      - name: Invalidate CloudFront
+        uses: chetan/invalidate-cloudfront-action@v2
+        env:
+          DISTRIBUTION: ${{ env.DISTRIBUTION_CLOUDFRONT }}
+          PATHS: '/*'
+          AWS_REGION: 'eu-south-1'
+          AWS_ACCESS_KEY_ID: ${{ env.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.AWS_SECRET_ACCESS_KEY }}
+  sentry:
+    needs: ci-cd
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Sentry CLI
+        run: npm install -g @sentry/cli
+      - name: Configure Sentry release
+        run: |
+          sentry-cli releases new ${{ env.VERSION }}
+          sentry-cli releases set-commits --auto ${{ env.VERSION }}
+          sentry-cli releases finalize ${{ env.VERSION }}
